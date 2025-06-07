@@ -24,105 +24,65 @@
  SOFTWARE.
  */
 
-#include <cstdint>
-#include <optional>
-#include <ostream>
+#include <iostream>
 #include <string_view>
-#include <type_traits>
-#include <utility>
-template <class T, class E = const char*> class Result {
-    std::uint32_t idx;
-    std::optional<T> value;
-    std::optional<E> error;
+#include <variant>
 
+class Error {
+    const char *err;
 public:
-    constexpr static Result Ok(std::uint32_t idx, T value)
-    {
-        return Result(idx, value);
-    }
+    constexpr Error(const char* err) : err(err) {}
+    constexpr const char* getError() const { return err; }
+};
 
-    constexpr static Result Err(std::uint32_t idx, E error)
-    {
-        return Result(idx, error);
-    }
+using parsedResult = std::variant<std::monostate, Error, char, std::string_view>;
 
-    constexpr bool is_err() const { return error.has_value(); }
-    constexpr bool is_ok() const { return value.has_value(); }
-    constexpr std::uint32_t getIndex() const { return idx; }
-    constexpr E getError() const { return error.value(); }
-    constexpr T getValue() const { return value.value(); }
+template<class... Ts>
+struct overloaded : Ts... { using Ts::operator()...; };
 
-    friend std::ostream& operator<<(std::ostream& os, Result r)
-    {
-        if (r.is_err()) {
-            os << "Error: " << r.getError() << '\n';
-            os << "Position: " << r.getIndex() << '\n';
-        } else {
-            os << "Result: " << r.getValue() << '\n';
+class Parser {
+    parsedResult result;
+    std::string_view input;
+    constexpr Parser(parsedResult res, std::string_view v) : result(std::move(res)), input{v} {}
+public:
+    constexpr Parser(std::string_view v) : input{v} {}
+    constexpr Parser parse(char c) const {
+        if (input.empty()) {
+            return {Error("Empty input"), ""};
         }
+        if (input[0] == c) {
+            return {c, input.substr(1)};
+        }
+        return {Error("No match"), input};
+    }
+    constexpr Parser parse(std::string_view expected) const {
+        if (input.empty()) {
+            return {Error("Empty input"), ""};
+        }
+        if (expected.size() <= input.size()) {
+            auto s = input.substr(0, expected.size());
+            if (s == expected) {
+                return {expected, input.substr(expected.size())};
+            }
+            return {Error("String cannot be matched!"), input};
+        }
+        return {Error("Expected string should be less than or equal to input string"), input};
+    }
+    friend inline std::ostream& operator<<(std::ostream& os, const Parser& parser)
+    {
+        std::visit(overloaded{
+            [&](std::monostate) {
+                os << "uninitialized monostate\n";
+            },
+            [&](const Error& e) {
+                os << "Error: " << e.getError() << '\n';
+            },
+            [&](char c) {
+                os << "value (char): " << c << '\n';
+            },
+            [&](std::string_view s) {
+                os << "value (string view): " << s << '\n';
+            }}, parser.result);
         return os;
     }
-
-private:
-    constexpr Result(std::uint32_t idx, T value)
-        : idx(idx)
-        , value(value)
-    {
-    }
-    constexpr Result(std::uint32_t idx, E err)
-        : idx(idx)
-        , error(err)
-    {
-    }
 };
-
-template <class Output, class Fn> class Parser {
-public:
-    constexpr Parser(Fn&& f)
-        : apply(std::forward<Fn>(f))
-    {
-    }
-    constexpr auto parse(std::string_view input) const
-        -> Result<Output>
-    {
-        return apply(input);
-    }
-
-private:
-    Fn apply;
-};
-
-template <class Output, class Fn> constexpr auto ParserType(Fn&& f)
-{
-    return Parser<Output, std::decay_t<Fn>>(std::forward<Fn>(f));
-}
-
-constexpr auto characterParser(char c)
-{
-    return ParserType<char>(
-        [=](std::string_view input) -> Result<char> {
-            if (input.empty())
-                return Result<char>::Err(0, "Empty input");
-            if (input[0] == c)
-                return Result<char>::Ok(1, c);
-            return Result<char>::Err(0, "No match");
-        });
-}
-
-constexpr auto stringParser(std::string_view expected)
-{
-    return ParserType<std::string_view>([=](std::string_view input) {
-        if (expected.size() <= input.size()) {
-            if (input.starts_with(expected)) {
-                return Result<std::string_view>::Ok(
-                    expected.size(), expected);
-            } else {
-                return Result<std::string_view>::Err(
-                    0, "String cannot be matched!");
-            }
-        }
-        return Result<std::string_view>::Err(0,
-            "Expected string should be less than or equal to input "
-            "string");
-    });
-}
